@@ -5,7 +5,7 @@ export function ctx() {
     ac = new (window.AudioContext || window.webkitAudioContext)();
     master = ac.createDynamicsCompressor(); master.connect(ac.destination);
   }
-  if (ac.state === 'suspended') ac.resume();
+  if (ac.state !== 'running' && ac.state !== 'closed') ac.resume().catch(() => {}); // iOS also has 'interrupted'
   return ac;
 }
 export const now = () => ctx().currentTime;
@@ -35,39 +35,60 @@ export function click(when, accent) {
 /* ---------- Microphone: monophonic pitch tracking ---------- */
 export const mic = { on: false, rms: 0, error: null };
 let micStream, micTimer;
-function pitchOf(buf, sr) {
+function pitchOf(buf, sr, floor) {
   const n = buf.length; let rms = 0;
   for (let i = 0; i < n; i++) rms += buf[i] * buf[i];
   rms = Math.sqrt(rms / n);
-  if (rms < 0.012) return { rms, f: 0 };
+  if (rms < floor) return { rms, f: 0 };
   const half = n >> 1, c = new Float32Array(half);
   for (let lag = 0; lag < half; lag++) { let s = 0; for (let i = 0; i < half; i++) s += buf[i] * buf[i + lag]; c[lag] = s; }
   let d = 0; while (d < half - 1 && c[d] > c[d + 1]) d++;
-  let mx = -1, pos = -1;
-  for (let i = d; i < half; i++) if (c[i] > mx) { mx = c[i]; pos = i; }
-  if (pos <= 0 || mx < c[0] * 0.5) return { rms, f: 0 };
+  let mx = -1;
+  for (let i = d; i < half; i++) if (c[i] > mx) mx = c[i];
+  if (mx < c[0] * 0.5) return { rms, f: 0 };
+  // Take the first peak that is nearly as strong as the best one: the best one alone is often
+  // a multiple of the period, which reads a fading note an octave or two too low.
+  let pos = -1;
+  for (let i = Math.max(d, 1); i < half - 1; i++) if (c[i] >= mx * 0.9 && c[i] >= c[i - 1] && c[i] >= c[i + 1]) { pos = i; break; }
+  if (pos <= 0) return { rms, f: 0 };
   const a = c[pos - 1], b = c[pos], e = c[pos + 1] ?? b, sh = (a + e - 2 * b) ? (a - e) / (2 * (a + e - 2 * b)) : 0;
   return { rms, f: sr / (pos + sh) };
 }
 export async function startMic(onDown, onUp) {
   if (mic.on) return true;
+  // Create and unlock the audio context while we still have the tap: on iPad, a context first made
+  // after the permission prompt stays suspended, its clock never moves and the analyser reads silence.
+  const c = ctx();
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
   } catch (e) { mic.error = e.name; return false; }
-  const c = ctx(), src = c.createMediaStreamSource(micStream), an = c.createAnalyser();
+  // Opening the mic switches the iPad's audio session, which can suspend or interrupt the context again.
+  if (c.state !== 'running') { try { await c.resume(); } catch {} }
+  const src = c.createMediaStreamSource(micStream), an = c.createAnalyser();
   an.fftSize = 2048; src.connect(an);
+  // Safari only processes nodes that lead to the speakers, so route the analyser into a silent gain.
+  const mute = c.createGain(); mute.gain.value = 0; an.connect(mute); mute.connect(c.destination);
+  mic.nodes = [src, an, mute];
   const buf = new Float32Array(an.fftSize);
-  let cur = null, cand = null, cnt = 0, fired = 0, low = 1;
+  let cur = null, cand = null, cnt = 0, fired = 0, low = 1, noise = 0.003, prev = 0, gap = 0;
   micTimer = setInterval(() => {
+    if (c.state !== 'running') c.resume().catch(() => {});
     an.getFloatTimeDomainData(buf);
-    const { rms, f } = pitchOf(buf, c.sampleRate);
-    mic.rms = rms;
-    if (!f || f < 60 || f > 2200) { if (cur != null) { onUp(cur); cur = null; } cand = null; cnt = 0; return; }
+    // The gate follows the room: an acoustic piano a metre from the iPad mic is much quieter than a line input.
+    const gate = Math.max(0.0025, noise * 2.5), { rms, f } = pitchOf(buf, c.sampleRate, gate);
+    if (!f) noise = noise * 0.95 + Math.min(rms, 0.05) * 0.05;
+    mic.rms = rms; const last = prev; prev = rms;
+    if (!f || f < 60 || f > 2200) {
+      // A ringing note can lose its pitch for a frame or two; only let go after ~120 ms or once it has died away.
+      if (cur != null && (++gap >= 3 || rms < gate)) { onUp(cur); cur = null; }
+      cand = null; cnt = 0; return;
+    }
+    gap = 0;
     const exact = 69 + 12 * Math.log2(f / 440), m = Math.round(exact);
     if (m === cand) cnt++; else { cand = m; cnt = 1; }
-    low = Math.min(low, rms);
     const t = performance.now();
-    const fresh = m !== cur, again = m === cur && t - fired > 140 && rms > 0.03 && rms > low * 1.9;
+    low = t - fired < 150 ? Math.max(low, rms) : Math.min(low, rms); // ride up the attack, then follow the decay
+    const fresh = m !== cur, again = m === cur && t - fired > 140 && rms > Math.max(0.006, noise * 4) && rms > low * 1.9 && rms > last * 1.6; // a new strike is a sudden jump, not a wobble
     if (cnt >= 2 && (fresh || again)) {
       if (cur != null) onUp(cur);
       cur = m; fired = t; low = rms;
@@ -80,6 +101,7 @@ export async function startMic(onDown, onUp) {
 export function stopMic() {
   clearInterval(micTimer);
   micStream?.getTracks().forEach(t => t.stop());
+  mic.nodes?.forEach(n => n.disconnect()); mic.nodes = null;
   mic.on = false; mic.rms = 0;
 }
 

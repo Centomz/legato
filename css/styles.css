@@ -213,7 +213,7 @@ input[type=number] { width: 70px; padding: 6px 8px; }
 .l-top { display: flex; align-items: center; gap: 16px; padding: 12px 28px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .l-title { flex: 1; min-width: 180px; } .l-title h1 { font: 500 25px/1.1 var(--display); } .l-title p { color: var(--muted); font-size: 14px; }
 .status { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; }
-.led { width: 9px; height: 9px; border-radius: 50%; background: #b9b6b1; } .led.live { background: var(--green); }
+.led { width: 9px; height: 9px; border-radius: 50%; background: #b9b6b1; } .led.live { background: var(--green); box-shadow: 0 0 0 calc(var(--mic, 0) * 6px) rgba(58,122,76,.28); transform: scale(calc(1 + var(--mic, 0) * .5)); }
 .l-main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 310px; position: relative; }
 .stage { overflow: auto; padding: 26px 34px 10px; position: relative; scroll-behavior: smooth; }
 .legend { display: flex; gap: 22px; justify-content: center; color: var(--muted); font-size: 14px; padding: 6px 0 12px; flex-wrap: wrap; }

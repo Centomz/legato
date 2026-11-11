@@ -24,7 +24,7 @@ function side(path) {
     <div class="side-foot">
       <p>${icon('flame')}<span>${st === 1 ? t('1-day streak') : t('{0}-day streak', st)}</span></p>
       <p class="inputs">${icon('mic')}<button data-shell="mic" class="${audio.mic.on ? 'on' : ''}">${t('Mic')}</button>·<button data-shell="midi" class="${audio.midi.inputs ? 'on' : ''}">MIDI</button>
-        <span class="muted">${audio.mic.on || audio.midi.inputs ? t('ready') : t('off')}</span></p>
+        ${audio.mic.on ? '<i class="led live"></i>' : ''}<span class="muted">${audio.mic.on || audio.midi.inputs ? t('ready') : t('off')}</span></p>
       <p class="lang"><button data-shell="en" class="${store.lang === 'en' ? 'on' : ''}">EN</button><button data-shell="fr" class="${store.lang === 'fr' ? 'on' : ''}">FR</button>
         <span class="sep"></span><button data-shell="n-en" class="${store.names === 'en' ? 'on' : ''}">C D E</button><button data-shell="n-sol" class="${store.names === 'sol' ? 'on' : ''}">Do Ré Mi</button></p>
     </div></aside>`;
@@ -50,3 +50,9 @@ app.addEventListener('click', async e => {
 });
 addEventListener('hashchange', render);
 render();
+
+// Every live light pulses with what the microphone hears, so it is obvious whether sound is getting in.
+(function pulse() {
+  document.documentElement.style.setProperty('--mic', audio.mic.on ? Math.min(1, audio.mic.rms * 25).toFixed(2) : 0);
+  requestAnimationFrame(pulse);
+})();
