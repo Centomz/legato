@@ -34,7 +34,6 @@ export function click(when, accent) {
 
 /* ---------- Microphone: monophonic pitch tracking ---------- */
 export const mic = { on: false, rms: 0, error: null };
-let micStream, micTimer;
 export function pitchOf(buf, sr, floor) {
   const n = buf.length; let rms = 0;
   for (let i = 0; i < n; i++) rms += buf[i] * buf[i];
@@ -75,46 +74,89 @@ export async function openMic(id, separate = false) { // separate: never use the
   // Safari only processes nodes that lead to the speakers, so route the analyser into a silent gain.
   an.fftSize = 2048; mute.gain.value = 0; src.connect(an); an.connect(mute); mute.connect(c.destination);
   const own = c !== ac;
-  return { way, c, stream, an, close() { stream.getTracks().forEach(x => x.stop()); [src, an, mute].forEach(n => n.disconnect()); if (own) c.close().catch(() => {}); } };
+  return { way, c, stream, an, src, mute, close() { stream.getTracks().forEach(x => x.stop()); [src, an, mute].forEach(n => n.disconnect()); if (own) c.close().catch(() => {}); } };
+}
+/* ---------- Hearing notes, chords included (see docs/03-chords.md) ---------- */
+// Peaks of a dB spectrum between 55 and 5000 Hz, within 20 dB of the strongest, lowest first.
+export function peaksOf(db, sr, fftSize) {
+  const hz = sr / fftSize, lo = Math.max(2, Math.floor(55 / hz)), hi = Math.min(db.length - 2, Math.ceil(5000 / hz));
+  let mx = -Infinity; for (let i = lo; i <= hi; i++) if (db[i] > mx) mx = db[i];
+  const thr = Math.max(mx - 20, -90), out = [];
+  for (let i = lo; i <= hi; i++) {
+    const a = db[i - 1], b = db[i], c = db[i + 1];
+    if (b <= thr || b <= a || b < c) continue;
+    const sh = (a - 2 * b + c) ? 0.5 * (a - c) / (a - 2 * b + c) : 0;
+    out.push({ f: (i + sh) * hz, db: b - 0.25 * (a - c) * sh });
+  }
+  return out;
+}
+// Which notes are sounding: peaks from peaksOf, f = the single pitch from pitchOf (0 if none). Returns [{ m, db, cents }].
+export function notesOf(peaks, f) {
+  if (!peaks.length) return [];
+  const near = (target, minDb = -Infinity) => peaks.find(p => Math.abs(p.f - target) < target * 0.03 && p.db >= minDb);
+  const top = Math.max(...peaks.map(p => p.db));
+  // One note: its fundamental is among the peaks, or (weak fundamental, low notes) harmonics 2 to 5 all are.
+  if (f && (near(f, top - 16) || [2, 3, 4, 5].every(k => near(f * k)))) {
+    const ex = 69 + 12 * Math.log2(f / 440), m = Math.round(ex), own = near(f) || near(f * 2) || peaks[0];
+    return [{ m, db: own.db, cents: Math.round((ex - m) * 100) }];
+  }
+  // Several notes: walk up the peaks; skip those that are harmonics of a note already found.
+  const acc = [];
+  for (const p of peaks) {
+    if (acc.some(a => { const k = Math.round(p.f / a.f); return k >= 2 && k <= 12 && Math.abs(p.f - k * a.f) < p.f * 0.03 && p.db < a.db + 8; })) continue;
+    const ex = 69 + 12 * Math.log2(p.f / 440), m = Math.round(ex);
+    if (Math.abs(ex - m) > 0.35 || m < 36 || m > 96) continue;
+    if (p.f < 1200 && !near(p.f * 2) && !near(p.f * 3)) continue; // a real note has overtones; hum and noise do not
+    acc.push({ m, f: p.f, db: p.db, cents: 0 });
+  }
+  return acc.sort((x, y) => y.db - x.db).slice(0, 6);
+}
+// Listen on an open mic handle (from openMic). Calls onDown(midi, cents) / onUp(midi). Returns a stop function.
+export function listen(h, onDown, onUp, onLevel) {
+  const c = h.c, an = h.an, an2 = c.createAnalyser();
+  an2.fftSize = 8192; an2.smoothingTimeConstant = 0; h.src.connect(an2); an2.connect(h.mute);
+  const buf = new Float32Array(an.fftSize), db = new Float32Array(an2.frequencyBinCount), act = new Map();
+  let noise = 0.003, prev = 0, strike = 0;
+  const timer = setInterval(() => {
+    if (c.state !== 'running') c.resume().catch(() => {});
+    an.getFloatTimeDomainData(buf);
+    // The gate follows the room: an acoustic piano a metre from the iPad mic is much quieter than a line input.
+    const gate = Math.max(0.0025, noise * 2.5), { rms, f } = pitchOf(buf, c.sampleRate, gate), t = performance.now();
+    if (rms < gate) noise = noise * 0.95 + Math.min(rms, 0.05) * 0.05;
+    if (rms > prev * 1.6 && rms > gate * 2) strike = t; // a sudden jump in loudness: something was struck
+    prev = rms; onLevel?.(rms);
+    let set = [];
+    if (rms >= gate) { an2.getFloatFrequencyData(db); set = notesOf(peaksOf(db, c.sampleRate, an2.fftSize), f > 60 && f < 2200 ? f : 0); }
+    const seen = new Set();
+    for (const n of set) {
+      seen.add(n.m);
+      let s = act.get(n.m); if (!s) act.set(n.m, s = { hits: 0, miss: 0, on: false, fired: 0, low: 0, lvl: 0 });
+      const lvl = 10 ** (n.db / 20);
+      s.hits++; s.miss = 0;
+      if (!s.on) { if (s.hits >= 2) { s.on = true; s.fired = t; s.low = lvl; onDown(n.m, n.cents); } }
+      else {
+        s.low = t - s.fired < 150 ? Math.max(s.low, lvl) : Math.min(s.low, lvl); // ride up the attack, then follow the decay
+        // the same note struck again: a strike just happened and this note's own level is climbing
+        if (t - s.fired > 140 && t - strike < 220 && lvl > s.lvl * 1.12 && lvl > s.low * 1.4) { onUp(n.m); s.fired = t; s.low = lvl; onDown(n.m, n.cents); }
+      }
+      s.lvl = lvl;
+    }
+    // A ringing note can drop out for a frame or two; let go after ~120 ms or once the sound has died away.
+    for (const [m, s] of act) if (!seen.has(m)) { s.hits = 0; if (++s.miss >= 3 || rms < gate) { if (s.on) onUp(m); act.delete(m); } }
+  }, 40);
+  return () => { clearInterval(timer); for (const [m, s] of act) if (s.on) onUp(m); try { h.src.disconnect(an2); an2.disconnect(); } catch {} };
 }
 export async function startMic(onDown, onUp, wayId) {
   if (mic.on) return true;
   ctx(); // unlock playback while the tap still counts
   let h;
   try { h = await openMic(wayId); } catch (e) { mic.error = e.name; return false; }
-  micStream = h.stream; mic.close = h.close; mic.way = h.way.id;
-  const c = h.c, an = h.an;
-  const buf = new Float32Array(an.fftSize);
-  let cur = null, cand = null, cnt = 0, fired = 0, low = 1, noise = 0.003, prev = 0, gap = 0;
-  micTimer = setInterval(() => {
-    if (c.state !== 'running') c.resume().catch(() => {});
-    an.getFloatTimeDomainData(buf);
-    // The gate follows the room: an acoustic piano a metre from the iPad mic is much quieter than a line input.
-    const gate = Math.max(0.0025, noise * 2.5), { rms, f } = pitchOf(buf, c.sampleRate, gate);
-    if (!f) noise = noise * 0.95 + Math.min(rms, 0.05) * 0.05;
-    mic.rms = rms; const last = prev; prev = rms;
-    if (!f || f < 60 || f > 2200) {
-      // A ringing note can lose its pitch for a frame or two; only let go after ~120 ms or once it has died away.
-      if (cur != null && (++gap >= 3 || rms < gate)) { onUp(cur); cur = null; }
-      cand = null; cnt = 0; return;
-    }
-    gap = 0;
-    const exact = 69 + 12 * Math.log2(f / 440), m = Math.round(exact);
-    if (m === cand) cnt++; else { cand = m; cnt = 1; }
-    const t = performance.now();
-    low = t - fired < 150 ? Math.max(low, rms) : Math.min(low, rms); // ride up the attack, then follow the decay
-    const fresh = m !== cur, again = m === cur && t - fired > 140 && rms > Math.max(0.006, noise * 4) && rms > low * 1.9 && rms > last * 1.6; // a new strike is a sudden jump, not a wobble
-    if (cnt >= 2 && (fresh || again)) {
-      if (cur != null) onUp(cur);
-      cur = m; fired = t; low = rms;
-      onDown(m, Math.round((exact - m) * 100));
-    }
-  }, 40);
+  const stop = listen(h, onDown, onUp, rms => { mic.rms = rms; });
+  mic.close = () => { stop(); h.close(); }; mic.way = h.way.id;
   mic.on = true; mic.error = null;
   return true;
 }
 export function stopMic() {
-  clearInterval(micTimer);
   mic.close?.(); mic.close = null;
   mic.on = false; mic.rms = 0;
 }

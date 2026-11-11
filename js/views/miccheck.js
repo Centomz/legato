@@ -3,7 +3,7 @@
 import { store, save, t, nn, input } from '../core.js';
 import * as audio from '../audio.js';
 
-export const VERSION = 4;
+export const VERSION = 5;
 const LABEL = {
   'raw-after': 'Raw sound · engine started after the mic',
   'voice-after': 'iPad voice processing · engine started after the mic',
@@ -69,20 +69,22 @@ export function render(root) {
       return;
     }
     store.micWay = best.id; save();
-    msg(t('Legato will now listen with way {0}. Play single notes to see them recognised below, then turn on Mic in the sidebar for your lessons.', audio.MIC_WAYS.findIndex(w => w.id === best.id) + 1));
+    msg(t('Legato will now listen with way {0}. Play notes or chords to see them recognised below, then turn on Mic in the sidebar for your lessons.', audio.MIC_WAYS.findIndex(w => w.id === best.id) + 1));
     try { h = await audio.openMic(best.id, true); } catch { return; }
-    const buf = new Float32Array(h.an.fftSize); let notes = [];
-    timer = setInterval(() => {
-      h.an.getFloatTimeDomainData(buf);
-      const { rms, f } = audio.pitchOf(buf, h.c.sampleRate, 0.0025);
+    // The live part runs the same listener as the lessons, so what shows here is what a lesson hears.
+    const held = new Set(); let lines = [], lastOn = 0;
+    const show = () => row($('live'), 'pitch', t('Notes recognised'), lines.length ? lines.slice(-6).join('   ·   ') : t('none yet — play a note or a chord'), lines.length ? true : null);
+    show();
+    const stopL = audio.listen(h, m => {
+      const now = performance.now();
+      // notes that start within 150 ms of each other are shown together, as one chord
+      if (now - lastOn < 150 && lines.length) lines[lines.length - 1] += ' + ' + nn(m, true); else lines.push(nn(m, true));
+      lastOn = now; held.add(m); show();
+    }, m => held.delete(m), rms => {
       $('meter').firstChild.style.width = Math.min(100, rms * 2500) + '%';
       row($('live'), 'level', t('Sound reaching the app'), `${t('now')} ${lvl(rms)}`, null);
-      if (f > 60 && f < 2200) {
-        const m = Math.round(69 + 12 * Math.log2(f / 440));
-        if (notes[notes.length - 1] !== m) notes = [...notes, m].slice(-8);
-        row($('live'), 'pitch', t('Notes recognised'), `${notes.map(n => nn(n)).join(' · ')}  (${Math.round(f)} Hz)`, true);
-      } else if (!notes.length) row($('live'), 'pitch', t('Notes recognised'), t('none yet — play one note at a time'), null);
-    }, 50);
+    });
+    const hh = h; h = { close() { stopL(); hh.close(); } };
   };
   function stopAll() { clearInterval(timer); timer = null; h?.close(); h = null; }
   return () => { dead = true; stopAll(); };

@@ -15,8 +15,16 @@ All in `js/audio.js`; the lesson side is in `docs/02-wait-mode.md` (mic leniency
      (×2…×12, within 3 %) of a note already accepted and not much louder than it. Otherwise it
      becomes a note if it is within 35 cents of a pitch and has a harmonic of its own (×2 or ×3).
      At most 6 notes.
-4. Tracking per note: note-on after 2 frames in a row, note-off after 3 frames missing. A re-strike
-   of a sounding note needs its level to jump (×1.8 over its low point).
+4. Tracking per note (`act` map): note-on after 2 frames in a row, note-off after 3 frames missing
+   or when the sound falls under the gate. A re-strike of a sounding note needs a sudden jump in
+   overall loudness (`strike`) within the last 220 ms **and** that note's own level climbing.
+
+`startMic()` (sidebar Mic button) and the live part of `#/miccheck` both call `listen()`.
+
+## Test result (11 Nov 2026, synthetic piano, `docs/testing.md` snippet)
+13 of 14 heard exactly: triads C, Dm, Am, G/B, a four-note Fmaj7, intervals (third, fifth, wide
+tenth), single and repeated notes, low G2. The miss: C4+C5 (an octave) heard as C4 alone — expected.
+**Not yet tried on a real piano.**
 
 ## Known limits (tell the owner, don't hide them)
 - Chords below about C3 are unreliable (the mic barely hears the fundamentals).

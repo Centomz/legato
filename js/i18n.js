@@ -125,4 +125,17 @@ export const FR = {
   'J. S. Bach · opening eight bars': 'J. S. Bach · huit premières mesures', 'Warm-up · two octaves': 'Échauffement · deux octaves',
   'whole note': 'ronde', 'dotted half note': 'blanche pointée', 'half note': 'blanche', 'dotted quarter note': 'noire pointée', 'quarter note': 'noire',
   'dotted eighth note': 'croche pointée', 'eighth note': 'croche', 'dotted sixteenth note': 'double croche pointée', 'sixteenth note': 'double croche', note: 'note',
+  // wait mode, cue, mic check
+  'Wait for me': 'M’attendre', 'Your turn': 'À vous', 'right first time': 'juste du premier coup', 'right on a later try': 'juste après un essai',
+  'timing not judged in wait mode': 'le rythme n’est pas jugé en mode attente',
+  'Press play. The line stops at each note and waits for you: play it and it moves on. Three clean repetitions and the tempo climbs.': 'Appuyez sur lecture. La ligne s’arrête à chaque note et vous attend : jouez-la et elle avance. Trois répétitions propres et le tempo monte.',
+  'Mic check': 'Test du micro', 'Can Legato hear your piano?': 'Legato entend-il votre piano ?', 'Start the check': 'Lancer le test',
+  'Press the button and allow the microphone. Then keep playing notes, loudly and steadily, for about 12 seconds while it tries four ways of listening.': 'Appuyez sur le bouton et autorisez le micro. Puis jouez des notes, fort et régulièrement, pendant environ 12 secondes : quatre façons d’écouter sont essayées.',
+  'Keep playing… way {0} of {1}': 'Continuez à jouer… façon {0} sur {1}', 'listening…': 'écoute…', 'loudest': 'max', 'now': 'maintenant',
+  'None of the four ways heard sound. Check that no other app is using the microphone, that nothing covers it, and try again.': 'Aucune des quatre façons n’a entendu de son. Vérifiez qu’aucune autre app n’utilise le micro, que rien ne le couvre, puis réessayez.',
+  'Legato will now listen with way {0}. Play notes or chords to see them recognised below, then turn on Mic in the sidebar for your lessons.': 'Legato écoutera désormais avec la façon {0}. Jouez des notes ou des accords pour les voir reconnus ci-dessous, puis activez Micro dans la barre latérale pour vos leçons.',
+  'Sound reaching the app': 'Son reçu par l’app', 'Notes recognised': 'Notes reconnues', 'none yet — play a note or a chord': 'aucune pour l’instant — jouez une note ou un accord',
+  'This page cannot use a microphone here (it needs https).': 'Cette page ne peut pas utiliser le micro ici (https requis).',
+  'Raw sound · engine started after the mic': 'Son brut · moteur lancé après le micro', 'iPad voice processing · engine started after the mic': 'Traitement vocal iPad · moteur lancé après le micro',
+  'iPad voice processing · engine started before the mic': 'Traitement vocal iPad · moteur lancé avant le micro', 'Raw sound · engine started before the mic': 'Son brut · moteur lancé avant le micro',
 };
