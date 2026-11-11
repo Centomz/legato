@@ -35,7 +35,7 @@ export function click(when, accent) {
 /* ---------- Microphone: monophonic pitch tracking ---------- */
 export const mic = { on: false, rms: 0, error: null };
 let micStream, micTimer;
-function pitchOf(buf, sr, floor) {
+export function pitchOf(buf, sr, floor) {
   const n = buf.length; let rms = 0;
   for (let i = 0; i < n; i++) rms += buf[i] * buf[i];
   rms = Math.sqrt(rms / n);

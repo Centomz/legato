@@ -316,3 +316,5 @@ input[type=number] { width: 70px; padding: 6px 8px; }
   .recrow { gap: 16px; }
 }
 @media print { .side, .tools, .panel, #kb, .l-ctrl { display: none !important; } .shell { display: block; } }
+
+.meter { height: 10px; background: var(--line); margin-top: 18px; max-width: 520px; } .meter i { display: block; height: 100%; width: 0; background: var(--green); transition: width .05s; }

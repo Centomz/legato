@@ -6,8 +6,9 @@ import { render as lesson } from './views/lesson.js';
 import { render as progress } from './views/progress.js';
 import { renderPath, renderLibrary, renderJournal } from './views/pathlib.js';
 import { renderRecord, renderReview, renderEditor } from './views/studio.js';
+import { render as miccheck } from './views/miccheck.js';
 
-const routes = { today, path: renderPath, library: renderLibrary, studio: renderRecord, 'studio/review': renderReview, 'studio/edit': renderEditor, progress, journal: renderJournal, lesson };
+const routes = { today, path: renderPath, library: renderLibrary, studio: renderRecord, 'studio/review': renderReview, 'studio/edit': renderEditor, progress, journal: renderJournal, lesson, miccheck };
 const NAV = [['today', 'home', 'Today'], ['path', 'path', 'Path'], ['library', 'library', 'Library'], ['studio', 'mic', 'Studio'], ['progress', 'chart', 'Progress'], ['journal', 'journal', 'Journal']];
 const app = document.getElementById('app');
 let cleanup = null;
@@ -24,7 +25,7 @@ function side(path) {
     <div class="side-foot">
       <p>${icon('flame')}<span>${st === 1 ? t('1-day streak') : t('{0}-day streak', st)}</span></p>
       <p class="inputs">${icon('mic')}<button data-shell="mic" class="${audio.mic.on ? 'on' : ''}">${t('Mic')}</button>·<button data-shell="midi" class="${audio.midi.inputs ? 'on' : ''}">MIDI</button>
-        ${audio.mic.on ? '<i class="led live"></i>' : ''}<span class="muted">${audio.mic.on || audio.midi.inputs ? t('ready') : t('off')}</span></p>
+        ${audio.mic.on ? '<i class="led live"></i>' : ''}<span class="muted">${audio.mic.on || audio.midi.inputs ? t('ready') : t('off')}</span><a href="#/miccheck" class="muted small">${t('Mic check')}</a></p>
       <p class="lang"><button data-shell="en" class="${store.lang === 'en' ? 'on' : ''}">EN</button><button data-shell="fr" class="${store.lang === 'fr' ? 'on' : ''}">FR</button>
         <span class="sep"></span><button data-shell="n-en" class="${store.names === 'en' ? 'on' : ''}">C D E</button><button data-shell="n-sol" class="${store.names === 'sol' ? 'on' : ''}">Do Ré Mi</button></p>
     </div></aside>`;
