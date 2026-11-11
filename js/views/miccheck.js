@@ -1,59 +1,89 @@
-// Mic check: walks through each step between the piano and the app and shows where the sound stops.
-import { t, nn } from '../core.js';
+// Mic check: tries each way of opening the microphone, keeps the one that hears the piano best,
+// then shows live level and recognised notes so you can see the whole chain working.
+import { store, save, t, nn, input } from '../core.js';
 import * as audio from '../audio.js';
 
-export const VERSION = 3;
+export const VERSION = 4;
+const LABEL = {
+  'raw-after': 'Raw sound · engine started after the mic',
+  'voice-after': 'iPad voice processing · engine started after the mic',
+  'voice-before': 'iPad voice processing · engine started before the mic',
+  'raw-before': 'Raw sound · engine started before the mic',
+};
+const TRY_MS = 3000, HEARD = 0.004;
 
 export function render(root) {
-  let stream, ac, timer, loud = 0, notes = [];
+  let h = null, timer = null, dead = false;
   root.innerHTML = `<div class="page">
     <p class="eyebrow">${t('Mic check')} · v${VERSION}</p>
     <h1 class="display">${t('Can Legato hear your piano?')}</h1>
-    <p class="lede">${t('Press the button, allow the microphone, then play single notes slowly. Each line turns green when that step works.')}</p>
+    <p class="lede">${t('Press the button and allow the microphone. Then keep playing notes, loudly and steadily, for about 12 seconds while it tries four ways of listening.')}</p>
     <div class="row"><button class="btn primary big" id="go">${t('Start the check')}</button></div>
-    <table class="tbl" id="out"><tbody></tbody></table>
+    <p class="lede" id="msg"></p>
+    <table class="tbl"><tbody id="ways"></tbody></table>
+    <table class="tbl"><tbody id="live"></tbody></table>
     <div class="meter" id="meter"><i></i></div>
   </div>`;
-  const rows = {}, body = root.querySelector('#out tbody');
-  function row(k, label, val, ok) {
-    if (!rows[k]) { const tr = document.createElement('tr'); tr.innerHTML = `<td>${label}</td><td></td>`; body.append(tr); rows[k] = tr; }
-    const td = rows[k].lastChild; td.textContent = val; td.style.color = ok == null ? '' : ok ? 'var(--green)' : 'var(--red)';
+  const $ = id => root.querySelector('#' + id), msg = s => { $('msg').textContent = s; };
+  function row(tb, k, label, val, ok) {
+    let tr = tb.querySelector(`[data-k="${k}"]`);
+    if (!tr) { tr = document.createElement('tr'); tr.dataset.k = k; tr.innerHTML = '<td></td><td></td>'; tb.append(tr); }
+    tr.firstChild.textContent = label; tr.lastChild.textContent = val;
+    tr.lastChild.style.color = ok == null ? '' : ok ? 'var(--green)' : 'var(--red)';
   }
-  row('https', t('Secure page (needed for the mic)'), window.isSecureContext ? t('yes') : t('no'), window.isSecureContext);
-  row('api', t('Browser can use a microphone'), navigator.mediaDevices?.getUserMedia ? t('yes') : t('no'), !!navigator.mediaDevices?.getUserMedia);
-  row('app', t('Mic button in the sidebar'), audio.mic.on ? t('on') : t('off — the lessons only listen when it is on'), audio.mic.on);
+  const rmsOf = buf => { let s = 0; for (const x of buf) s += x * x; return Math.sqrt(s / buf.length); };
+  const lvl = v => (v * 1000).toFixed(1);
+  const wait = ms => new Promise(r => setTimeout(r, ms));
 
-  root.querySelector('#go').onclick = async () => {
-    stop();
-    // Make and unlock the sound engine while the tap still counts, before the permission prompt.
-    ac = new (window.AudioContext || window.webkitAudioContext)();
-    ac.resume().catch(() => {});
-    row('perm', t('Microphone allowed'), t('asking…'));
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-    } catch (e) { row('perm', t('Microphone allowed'), `${t('no')} — ${e.name}: ${e.message}`, false); return; }
-    row('perm', t('Microphone allowed'), t('yes'), true);
-    const tr = stream.getAudioTracks()[0], st = tr?.getSettings?.() || {};
-    row('track', t('Microphone in use'), `${tr?.label || '?'} · ${tr?.readyState}${tr?.muted ? ' · ' + t('muted by the system') : ''}${st.sampleRate ? ' · ' + st.sampleRate + ' Hz' : ''}`, tr?.readyState === 'live' && !tr.muted);
-    try { await ac.resume(); } catch {}
-    const src = ac.createMediaStreamSource(stream), an = ac.createAnalyser(), mute = ac.createGain();
-    an.fftSize = 2048; mute.gain.value = 0; src.connect(an); an.connect(mute); mute.connect(ac.destination);
-    const buf = new Float32Array(an.fftSize), t0 = ac.currentTime;
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) msg(t('This page cannot use a microphone here (it needs https).'));
+
+  $('go').onclick = async () => {
+    stopAll(); $('ways').innerHTML = ''; $('live').innerHTML = '';
+    if (audio.mic.on) { audio.stopMic(); input.changed?.(); } // the app's own mic would compete with the test
+    $('go').disabled = true;
+    const results = [];
+    for (const [i, way] of audio.MIC_WAYS.entries()) {
+      if (dead) return;
+      msg(t('Keep playing… way {0} of {1}', i + 1, audio.MIC_WAYS.length));
+      row($('ways'), way.id, `${i + 1}. ${t(LABEL[way.id])}`, t('listening…'));
+      let next;
+      // Open the next way before closing the previous one, so the iPad keeps capturing throughout.
+      try { next = await audio.openMic(way.id, true); }
+      catch (e) { row($('ways'), way.id, `${i + 1}. ${t(LABEL[way.id])}`, `${e.name}`, false); continue; }
+      h?.close(); h = next;
+      const buf = new Float32Array(h.an.fftSize); let loud = 0;
+      const t0 = performance.now();
+      while (performance.now() - t0 < TRY_MS && !dead) {
+        h.an.getFloatTimeDomainData(buf); loud = Math.max(loud, rmsOf(buf));
+        $('meter').firstChild.style.width = Math.min(100, rmsOf(buf) * 2500) + '%';
+        await wait(40);
+      }
+      results.push({ id: way.id, loud, state: h.c.state });
+      row($('ways'), way.id, `${i + 1}. ${t(LABEL[way.id])}`, `${t('loudest')} ${lvl(loud)} · ${h.c.state}`, loud > HEARD);
+    }
+    h?.close(); h = null;
+    $('go').disabled = false;
+    const best = results.sort((a, b) => b.loud - a.loud)[0];
+    if (!best || best.loud <= HEARD) {
+      msg(t('None of the four ways heard sound. Check that no other app is using the microphone, that nothing covers it, and try again.'));
+      return;
+    }
+    store.micWay = best.id; save();
+    msg(t('Legato will now listen with way {0}. Play single notes to see them recognised below, then turn on Mic in the sidebar for your lessons.', audio.MIC_WAYS.findIndex(w => w.id === best.id) + 1));
+    try { h = await audio.openMic(best.id, true); } catch { return; }
+    const buf = new Float32Array(h.an.fftSize); let notes = [];
     timer = setInterval(() => {
-      if (ac.state !== 'running') ac.resume().catch(() => {});
-      row('engine', t('Sound engine running'), `${ac.state} · ${ac.sampleRate} Hz · ${(ac.currentTime - t0).toFixed(1)} s`, ac.state === 'running' && ac.currentTime > t0);
-      an.getFloatTimeDomainData(buf);
-      const { rms, f } = audio.pitchOf(buf, ac.sampleRate, 0.0025);
-      loud = Math.max(loud, rms);
-      row('level', t('Sound reaching the app'), `${t('now')} ${(rms * 1000).toFixed(1)} · ${t('loudest')} ${(loud * 1000).toFixed(1)}`, loud > 0.004);
-      root.querySelector('#meter i').style.width = Math.min(100, rms * 2500) + '%';
+      h.an.getFloatTimeDomainData(buf);
+      const { rms, f } = audio.pitchOf(buf, h.c.sampleRate, 0.0025);
+      $('meter').firstChild.style.width = Math.min(100, rms * 2500) + '%';
+      row($('live'), 'level', t('Sound reaching the app'), `${t('now')} ${lvl(rms)}`, null);
       if (f > 60 && f < 2200) {
         const m = Math.round(69 + 12 * Math.log2(f / 440));
-        if (notes[notes.length - 1] !== m) { notes.push(m); notes = notes.slice(-8); }
-        row('pitch', t('Notes recognised'), `${notes.map(n => nn(n)).join(' · ')}  (${Math.round(f)} Hz)`, true);
-      } else if (!rows.pitch) row('pitch', t('Notes recognised'), t('none yet — play one note at a time'), null);
+        if (notes[notes.length - 1] !== m) notes = [...notes, m].slice(-8);
+        row($('live'), 'pitch', t('Notes recognised'), `${notes.map(n => nn(n)).join(' · ')}  (${Math.round(f)} Hz)`, true);
+      } else if (!notes.length) row($('live'), 'pitch', t('Notes recognised'), t('none yet — play one note at a time'), null);
     }, 50);
   };
-  function stop() { clearInterval(timer); stream?.getTracks().forEach(x => x.stop()); ac?.close().catch(() => {}); stream = ac = null; }
-  return stop;
+  function stopAll() { clearInterval(timer); timer = null; h?.close(); h = null; }
+  return () => { dead = true; stopAll(); };
 }

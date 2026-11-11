@@ -54,21 +54,36 @@ export function pitchOf(buf, sr, floor) {
   const a = c[pos - 1], b = c[pos], e = c[pos + 1] ?? b, sh = (a + e - 2 * b) ? (a - e) / (2 * (a + e - 2 * b)) : 0;
   return { rms, f: sr / (pos + sh) };
 }
-export async function startMic(onDown, onUp) {
-  if (mic.on) return true;
-  // Create and unlock the audio context while we still have the tap: on iPad, a context first made
-  // after the permission prompt stays suspended, its clock never moves and the analyser reads silence.
-  const c = ctx();
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-  } catch (e) { mic.error = e.name; return false; }
-  // Opening the mic switches the iPad's audio session, which can suspend or interrupt the context again.
+/* Ways to open the microphone. Desktop browsers hear well with the raw sound (no voice processing),
+   but on iPad Safari some of these give near-silence, depending on whether the audio context exists
+   before the mic opens and whether voice processing is on. The mic check tries them all and keeps the best. */
+export const MIC_WAYS = [
+  { id: 'raw-after', raw: true, after: true },
+  { id: 'voice-after', raw: false, after: true },
+  { id: 'voice-before', raw: false, after: false },
+  { id: 'raw-before', raw: true, after: false },
+];
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+export const defaultWay = () => (IOS ? 'voice-after' : 'raw-before');
+export async function openMic(id, separate = false) { // separate: never use the playback context
+  const way = MIC_WAYS.find(w => w.id === id) || MIC_WAYS.find(w => w.id === defaultWay());
+  let c = way.after ? null : (separate ? new (window.AudioContext || window.webkitAudioContext)() : ctx());
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: way.raw ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : true });
+  if (way.after) c = new (window.AudioContext || window.webkitAudioContext)(); // while capturing, Safari lets it start
   if (c.state !== 'running') { try { await c.resume(); } catch {} }
-  const src = c.createMediaStreamSource(micStream), an = c.createAnalyser();
-  an.fftSize = 2048; src.connect(an);
+  const src = c.createMediaStreamSource(stream), an = c.createAnalyser(), mute = c.createGain();
   // Safari only processes nodes that lead to the speakers, so route the analyser into a silent gain.
-  const mute = c.createGain(); mute.gain.value = 0; an.connect(mute); mute.connect(c.destination);
-  mic.nodes = [src, an, mute];
+  an.fftSize = 2048; mute.gain.value = 0; src.connect(an); an.connect(mute); mute.connect(c.destination);
+  const own = c !== ac;
+  return { way, c, stream, an, close() { stream.getTracks().forEach(x => x.stop()); [src, an, mute].forEach(n => n.disconnect()); if (own) c.close().catch(() => {}); } };
+}
+export async function startMic(onDown, onUp, wayId) {
+  if (mic.on) return true;
+  ctx(); // unlock playback while the tap still counts
+  let h;
+  try { h = await openMic(wayId); } catch (e) { mic.error = e.name; return false; }
+  micStream = h.stream; mic.close = h.close; mic.way = h.way.id;
+  const c = h.c, an = h.an;
   const buf = new Float32Array(an.fftSize);
   let cur = null, cand = null, cnt = 0, fired = 0, low = 1, noise = 0.003, prev = 0, gap = 0;
   micTimer = setInterval(() => {
@@ -100,8 +115,7 @@ export async function startMic(onDown, onUp) {
 }
 export function stopMic() {
   clearInterval(micTimer);
-  micStream?.getTracks().forEach(t => t.stop());
-  mic.nodes?.forEach(n => n.disconnect()); mic.nodes = null;
+  mic.close?.(); mic.close = null;
   mic.on = false; mic.rms = 0;
 }
 

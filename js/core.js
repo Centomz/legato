@@ -105,7 +105,7 @@ addEventListener('keyup', e => { const k = e.key.toLowerCase(); if (held[k]) { i
 
 export async function toggleMic() {
   if (audio.mic.on) audio.stopMic();
-  else if (!(await audio.startMic((m, c) => input.down(m, 0.7, 'mic', c), m => input.up(m, 'mic')))) toast(t('Microphone unavailable — check the browser permission.'));
+  else if (!(await audio.startMic((m, c) => input.down(m, 0.7, 'mic', c), m => input.up(m, 'mic'), store.micWay))) toast(t('Microphone unavailable — check the browser permission.'));
   input.changed?.();
   return audio.mic.on;
 }
