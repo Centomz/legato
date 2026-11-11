@@ -5,7 +5,7 @@ import * as audio from './audio.js';
 
 const KEY = 'legato.v1';
 const defaults = {
-  lang: 'en', names: 'en', fingering: true, mode: 'coach', view: 'sheet', sound: true,
+  lang: 'en', names: 'en', fingering: true, mode: 'coach', view: 'sheet', sound: true, wait: true,
   sessions: [], journal: [], plan: null, mastered: {}, weak: {}, ramp: {}, xp: 0, takes: [], pieces: [], intention: {},
 };
 let saved = {};

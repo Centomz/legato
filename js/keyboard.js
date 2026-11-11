@@ -22,10 +22,12 @@ export function Keyboard(el, { lo = 48, hi = 84 } = {}) {
     x, lo, hi,
     press(m, cls = 'on') { const k = key(m); if (k) { k.classList.remove('on', 'ok', 'bad'); k.classList.add(cls); } },
     release(m) { key(m)?.classList.remove('on', 'ok', 'bad'); },
-    targets(list) {
-      targets.forEach(m => { const k = key(m); if (k) { k.classList.remove('tR', 'tL'); k.querySelector('.fg').textContent = ''; } });
-      targets = list.map(n => n.midi);
-      list.forEach(n => { const k = key(n.midi); if (k) { k.classList.add('t' + n.h); k.querySelector('.fg').textContent = n.f || ''; } });
+    // list: notes due now (full light, finger number). soon: the next notes (faint outline).
+    targets(list, soon = []) {
+      targets.forEach(m => { const k = key(m); if (k) { k.classList.remove('tR', 'tL', 'soon'); k.querySelector('.fg').textContent = ''; } });
+      targets = [...list, ...soon].map(n => n.midi);
+      soon.forEach(n => key(n.midi)?.classList.add('soon'));
+      list.forEach(n => { const k = key(n.midi); if (k) { k.classList.remove('soon'); k.classList.add('t' + n.h); k.querySelector('.fg').textContent = n.f || ''; } });
     },
     destroy() { removeEventListener('pointerup', release); removeEventListener('pointercancel', release); },
   };

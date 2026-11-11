@@ -204,6 +204,7 @@ input[type=number] { width: 70px; padding: 6px 8px; }
 .k .fg:empty { display: none; }
 .k.w.tR { background: var(--gold-soft); } .k.w.tL { background: var(--green-soft); }
 .k.b.tR { background: #c08a3d; } .k.b.tL { background: #6c8f76; }
+.k.soon { box-shadow: inset 0 -5px 0 var(--gold); }
 .k.w.on { background: #e1ddd6; } .k.b.on { background: #5a5856; }
 .k.w.ok, .k.b.ok { background: #a5c7ad; } .k.w.bad, .k.b.bad { background: var(--red); }
 
@@ -318,3 +319,9 @@ input[type=number] { width: 70px; padding: 6px 8px; }
 @media print { .side, .tools, .panel, #kb, .l-ctrl { display: none !important; } .shell { display: block; } }
 
 .meter { height: 10px; background: var(--line); margin-top: 18px; max-width: 520px; } .meter i { display: block; height: 100%; width: 0; background: var(--green); transition: width .05s; }
+
+.cue { position: sticky; top: 0; left: 0; right: 0; z-index: 4; height: 0; display: flex; justify-content: center; pointer-events: none; }
+.cue span { background: var(--ink); color: var(--paper); padding: 5px 16px; border-radius: 16px; font-size: 16px; height: fit-content; white-space: nowrap; }
+.cue span:empty { display: none; }
+.cue .count { font: 500 30px/1 var(--display); padding: 8px 20px; }
+.lesson.falling .cue { position: absolute; top: 14px; }

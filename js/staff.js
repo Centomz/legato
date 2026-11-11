@@ -17,6 +17,15 @@ export function renderStaff(p, o = {}) {
     const b = Math.min(Math.floor(pos / beats + 1e-6), to - 1) - from, line = Math.floor(b / per);
     return { line, x: LP + (b % per) * barW + 26 + ((pos - (b + from) * beats) / beats) * (barW - 34) };
   };
+  // Playhead position: same as xOf, but it glides across the barline during the last quarter-beat
+  // of a bar instead of jumping the 34 px between one bar's end and the next bar's first beat.
+  const xPh = pos => {
+    const b0 = Math.min(Math.floor(pos / beats + 1e-6), to - 1), b = b0 - from, line = Math.floor(b / per), col = b % per;
+    const fr = (pos - b0 * beats) / beats, x0 = LP + col * barW + 26, span = barW - 34, z = 1 - 0.25 / beats;
+    let x = x0 + fr * span;
+    if (fr > z && col < per - 1 && b0 < to - 1) x = x0 + z * span + ((fr - z) / (1 - z)) * ((1 - z) * span + 34);
+    return { line, x };
+  };
   let s = `<svg class="staff" viewBox="0 0 ${W} ${sysH * nLines}" width="100%" xmlns="http://www.w3.org/2000/svg">`;
 
   for (let line = 0; line < nLines; line++) {
@@ -97,7 +106,7 @@ export function renderStaff(p, o = {}) {
     }
     for (const n of e.notes) {
       const c = st[n.id]?.cls || '';
-      out += `<g class="${c}" data-id="${n.id}">`;
+      out += `<g class="${c}" data-id="${n.id}" data-lx="${e.x}" data-ly="${e.ty + 78}">`;
       for (let l = -2; l >= n.off; l -= 2) out += `<line class="ledger" x1="${e.x - 10}" x2="${e.x + 10}" y1="${e.ty + 40 - l * 5}" y2="${e.ty + 40 - l * 5}"/>`;
       for (let l = 10; l <= n.off; l += 2) out += `<line class="ledger" x1="${e.x - 10}" x2="${e.x + 10}" y1="${e.ty + 40 - l * 5}" y2="${e.ty + 40 - l * 5}"/>`;
       out += `<ellipse class="head${hollow ? ' hollow' : ''}" cx="${e.x}" cy="${n.y}" rx="6.3" ry="4.5" transform="rotate(-20 ${e.x} ${n.y})"/>`;
@@ -120,15 +129,33 @@ export function renderStaff(p, o = {}) {
     s += '</g>';
   }
   s += '<line class="ph" x1="0" x2="0" y1="0" y2="0" style="display:none"/></svg>';
-  return { svg: s, layout: { W, sysH, top0, gap, staves, per, from, to, barW, beats, xOf, nLines } };
+  return { svg: s, layout: { W, sysH, top0, gap, staves, per, from, to, barW, beats, xOf, xPh, nLines } };
 }
 
 export function movePlayhead(svg, L, pos) {
   const ph = svg?.querySelector('.ph'); if (!ph) return 0;
-  const { line, x } = L.xOf(Math.max(L.from * L.beats, Math.min(pos, L.to * L.beats - 1e-4)));
+  const { line, x } = L.xPh(Math.max(L.from * L.beats, Math.min(pos, L.to * L.beats - 1e-4)));
   const y0 = line * L.sysH + L.top0 - 34, y1 = line * L.sysH + L.top0 + (L.staves.length - 1) * L.gap + 40 + 34;
   ph.style.display = ''; ph.setAttribute('x1', x); ph.setAttribute('x2', x); ph.setAttribute('y1', y0); ph.setAttribute('y2', y1);
   return line;
+}
+// Recolour notes in place (no rebuild): states = { noteId: { cls, label } }.
+export function paintStaff(svg, states) {
+  if (!svg) return;
+  const seen = new Set();
+  for (const g of svg.querySelectorAll('g[data-id]')) {
+    const st = states[g.dataset.id] || {}, cls = st.cls || '';
+    if (g.getAttribute('class') !== cls) g.setAttribute('class', cls);
+    const outer = g.parentNode;
+    if (!seen.has(outer)) { seen.add(outer); const oc = 'n ' + cls; if (outer.getAttribute('class') !== oc) outer.setAttribute('class', oc); }
+    let lbl = g.querySelector('.lbl');
+    if (!st.label) { lbl?.remove(); continue; }
+    if (!lbl) {
+      lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      lbl.setAttribute('class', 'lbl'); lbl.setAttribute('x', g.dataset.lx); lbl.setAttribute('y', g.dataset.ly); g.append(lbl);
+    }
+    if (lbl.textContent !== st.label) lbl.textContent = st.label;
+  }
 }
 export const hidePlayhead = svg => { const ph = svg?.querySelector('.ph'); if (ph) ph.style.display = 'none'; };
 

@@ -37,7 +37,7 @@ export function render(root, prm) {
     <h1 class="display">${esc(s.title)}, ${t('bars {0}–{1}', s.from + 1, s.to + 1)}</h1>
     <div class="kpis">
       <div><b>${s.accuracy}%</b><span>${t('right notes')}</span></div>
-      <div><b>±${s.spread} ms</b><span>${t('timing spread')}, ${lean}</span></div>
+      <div><b>${s.deltas.length ? `±${s.spread} ms` : '—'}</b><span>${s.deltas.length ? `${t('timing spread')}, ${lean}` : t('timing not judged in wait mode')}</span></div>
       <div><b>${s.cleanTempo ? `${q} = ${s.cleanTempo}` : '—'}</b><span>${t('cleanest tempo · goal {0}', s.goal)}</span></div>
       <div><b>${mastered} / ${s.nbars}</b><span>${t('bars mastered')}</span></div>
     </div>

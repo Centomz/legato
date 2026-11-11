@@ -1,11 +1,12 @@
 // Live lesson: sheet or falling notes, real-time judging, tempo ramp, coach / quiet / strict.
 import { store, save, t, esc, nn, icon, q, input, go, getPiece, dkey, toggleMic, toast } from '../core.js';
 import { flatten, barsOf } from '../music.js';
-import { renderStaff, movePlayhead, hidePlayhead } from '../staff.js';
+import { renderStaff, movePlayhead, hidePlayhead, paintStaff } from '../staff.js';
 import { Keyboard, rangeFor } from '../keyboard.js';
 import * as audio from '../audio.js';
 
-const TOL = 75, PPB = 92, STEPS = [60, 70, 80, 90, 100];
+const TOL = 75, PPB = 92, STEPS = [60, 70, 80, 90, 100], LEAD = 0.06; // LEAD: seconds before a note is due that its key lights
+const OVERTONE = [0, 12, -12, 19, 24, -24, 28, 31, 36]; // intervals a microphone may report on top of the real note
 const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
 
 export function render(root, prm) {
@@ -18,7 +19,7 @@ export function render(root, prm) {
   };
   if (S.to <= S.from) S.to = S.from + 1;
   const ses = { start: Date.now(), perBar: {}, deltas: [], judged: 0, right: 0, okN: 0, cleanTempo: 0, earned: null, take: [], vel: { R: [], L: [] }, slips: {} };
-  let run = null, raf = 0, layout = null, lastLine = -1, lastTg = '', pendingStop = null, done = false;
+  let run = null, raf = 0, layout = null, lastLine = -1, lastTg = '', lastCue = '', pendingStop = null, done = false;
   const bpm = () => Math.round(piece.tempo * S.pct / 100);
   const handName = h => h === 'R' ? t('Right hand') : t('Left hand');
 
@@ -48,24 +49,33 @@ export function render(root, prm) {
   }
   function dispPass() { // which pass the playhead is in (the judged pass lingers for a short grace)
     if (!run) return 0;
+    if (run.wait) return run.pass;
     const bp = (audio.now() - run.t0) / run.spb;
     return Math.max(run.pass, Math.floor(Math.max(0, bp) / run.len));
   }
   function shownRes() { return !run ? {} : dispPass() > run.pass ? run.carry : run.res; }
+  // Beats from the start of the range for whatever is on screen (negative during the count-in).
+  function curLocal() { return !run ? 0 : run.wait ? run.p : (audio.now() - run.t0) / run.spb - dispPass() * run.len; }
+  // Wait mode: the notes the line is waiting for (every unplayed note at the earliest beat), or null.
+  function nextGroup() {
+    const pend = run.exp.filter(n => !run.res[n.id]);
+    return pend.length ? pend.filter(n => n.pos === pend[0].pos) : null;
+  }
+  const overtone = (m, notes) => notes.some(x => OVERTONE.includes(m - x.midi));
   function states() {
     const st = {}, res = shownRes(), V = S.drill ? S.drill.saved : S;
     for (const n of all) {
       if (n.bar < V.from || n.bar >= V.to) continue;
       let cls = '', label;
-      const r = res[n.id];
+      const r = res[n.id], sl = run?.wait ? run.slip[n.id] : null;
       if (n.bar < S.from || n.bar >= S.to || (S.hands !== 'both' && n.h !== S.hands)) cls = 'st-dim';
       if (r) {
-        if (r.st === 'ok') cls = 'st-ok';
+        if (r.st === 'ok') cls = r.fixed ? 'st-off' : 'st-ok';
         else if (r.st === 'late' || r.st === 'early') { cls = 'st-off'; label = (r.ms > 0 ? '+' : '−') + Math.abs(r.ms) + ' ms'; }
         else if (r.st === 'wrong') { cls = 'st-wrong'; label = t('played {0}', nn(r.played, false, piece.sharps)); }
         else cls = 'st-wrong st-miss';
         if (store.mode === 'quiet') label = undefined;
-      }
+      } else if (sl != null) { cls = 'st-wrong'; if (store.mode !== 'quiet') label = t('played {0}', nn(sl, false, piece.sharps)); }
       st[n.id] = { cls, label };
     }
     return st;
@@ -75,28 +85,40 @@ export function render(root, prm) {
     if (store.view === 'sheet') {
       const r = renderStaff(piece, { from: V.from, to: V.to, perLine: 4, width: 1040, state: states(), fingering: store.fingering, highlightBar: S.drill ? S.drill.bar : null });
       layout = r.layout;
-      stage.innerHTML = `<div class="sheet">${r.svg}</div><div class="legend"><span><i class="d ok"></i>${t('right note, in time')}</span><span><i class="d off"></i>${t('early / late')}</span><span><i class="d bad"></i>${t('wrong note')}</span></div>`;
-      lastLine = -1;
+      stage.innerHTML = `<div class="cue" id="cue"><span></span></div><div class="sheet">${r.svg}</div><div class="legend"><span><i class="d ok"></i>${store.wait ? t('right first time') : t('right note, in time')}</span><span><i class="d off"></i>${store.wait ? t('right on a later try') : t('early / late')}</span><span><i class="d bad"></i>${t('wrong note')}</span></div>`;
+      lastLine = -1; lastCue = '';
     } else {
-      const res = shownRes(), base = S.from * beats;
+      const base = S.from * beats; lastCue = '';
       let h = '<div class="fall"><div class="fall-in">';
       for (let m = kb.lo; m <= kb.hi; m += 12) h += `<i class="lane" style="left:${kb.x[m].l}%"></i>`;
       for (const n of all) {
         if (n.bar < S.from || n.bar >= S.to) continue;
-        const r = res[n.id], x = kb.x[n.midi]; if (!x) continue;
+        const x = kb.x[n.midi]; if (!x) continue;
         const mine = S.hands === 'both' || n.h === S.hands;
-        const cls = r ? (r.st === 'ok' ? 'ok' : r.st === 'late' || r.st === 'early' ? 'off' : 'bad') : '';
-        h += `<div class="blk ${n.h} ${mine ? '' : 'dim'} ${cls}" style="left:${x.l}%;width:${x.w}%;bottom:${(n.pos - base) * PPB}px;height:${Math.max(14, n.d * PPB - 4)}px">${store.fingering && n.f ? n.f : ''}</div>`;
+        h += `<div class="blk ${n.h} ${mine ? '' : 'dim'} ${blkCls(n.id)}" data-id="${n.id}" style="left:${x.l}%;width:${x.w}%;bottom:${(n.pos - base) * PPB}px;height:${Math.max(14, n.d * PPB - 4)}px">${store.fingering && n.f ? n.f : ''}</div>`;
       }
-      stage.innerHTML = h + `</div></div><p class="fall-note">${fallNote()}</p>`;
+      stage.innerHTML = h + `</div></div><div class="cue" id="cue"><span></span></div><p class="fall-note">${fallNote()}</p>`;
       placeFall();
     }
   }
   const fallNote = () => store.mode === 'quiet' ? t('Quiet mode — colour only, comments in the report') : esc(S.coach?.h || '');
   function placeFall() {
     const inner = root.querySelector('.fall-in'); if (!inner) return;
-    const bp = run ? (audio.now() - run.t0) / run.spb : 0, local = run ? bp - dispPass() * run.len : 0;
-    inner.style.transform = `translateY(${local * PPB}px)`;
+    inner.style.transform = `translateY(${curLocal() * PPB}px)`;
+  }
+  function blkCls(id) {
+    const r = shownRes()[id];
+    if (!r) return run?.wait && run.slip[id] != null ? 'bad' : '';
+    return r.st === 'ok' ? (r.fixed ? 'off' : 'ok') : r.st === 'late' || r.st === 'early' ? 'off' : 'bad';
+  }
+  // Recolour what is on screen without rebuilding it (rebuilding made the line flicker and jump).
+  function paint() {
+    if (store.view === 'sheet') paintStaff(root.querySelector('.staff'), states());
+    else root.querySelectorAll('.blk[data-id]').forEach(b => { const c = blkCls(b.dataset.id); b.classList.remove('ok', 'off', 'bad'); if (c) b.classList.add(c); });
+  }
+  function setCue(text, count) {
+    if (text === lastCue) return; lastCue = text;
+    const el = root.querySelector('#cue span'); if (el) { el.textContent = text; el.className = count ? 'count' : ''; }
   }
   function timingText() {
     const d = ses.deltas.slice(-24); if (d.length < 3) return '—';
@@ -128,7 +150,7 @@ export function render(root, prm) {
         <p class="muted small">${t('Quiet mode — colour only, comments in the report')}</p>${hint()}`;
       return;
     }
-    const m = S.coach || { h: t('Slow is the short road.'), d: t('Press play: one bar of count-in, then follow the line. Three clean repetitions and the tempo climbs.') };
+    const m = S.coach || { h: t('Slow is the short road.'), d: store.wait ? t('Press play. The line stops at each note and waits for you: play it and it moves on. Three clean repetitions and the tempo climbs.') : t('Press play: one bar of count-in, then follow the line. Three clean repetitions and the tempo climbs.') };
     c.innerHTML = `<p class="eyebrow">${store.mode === 'strict' ? t('Strict') : t('Coach')}</p><h2>${esc(m.h)}</h2><p class="body">${esc(m.d)}</p>
       <dl class="stats"><dt>${t('Accuracy')}</dt><dd>${ses.judged ? Math.round(100 * ses.right / ses.judged) + '%' : '—'}</dd>
       <dt>${t('Timing')}</dt><dd>${timingText()}</dd><dt>${t('Dynamics')}</dt><dd>${dynText()}</dd>
@@ -145,6 +167,7 @@ export function render(root, prm) {
       <div class="seg">${[['both', t('Both hands')], ['R', t('Right')], ['L', t('Left')]].map(([v, l]) => `<button data-act="hands" data-v="${v}" class="${S.hands === v ? 'on' : ''}">${l}</button>`).join('')}</div>
       <div class="loopbox ${S.loop ? 'on' : ''}"><button class="btn ${S.loop ? 'on' : ''}" data-act="loop" aria-pressed="${S.loop}">${icon('loop')}${t('Loop bars')}</button>
         <input type="number" id="rf" min="1" max="${nb}" value="${S.from + 1}" aria-label="${t('From bar')}">–<input type="number" id="rt" min="1" max="${nb}" value="${S.to}" aria-label="${t('To bar')}"></div>
+      <button class="btn ${store.wait ? 'on' : ''}" data-act="wait" aria-pressed="${store.wait}">${icon('pause')}${t('Wait for me')}</button>
       <button class="btn ${S.metro ? 'on' : ''}" data-act="metro" aria-pressed="${S.metro}">${icon('timer')}${t('Metronome')}</button>
       <button class="btn ${store.fingering ? 'on' : ''}" data-act="fing" aria-pressed="${store.fingering}">${t('Fingering')}</button>
       <span class="grow"></span>
@@ -155,7 +178,7 @@ export function render(root, prm) {
     };
   }
   function redraw() { drawTop(); drawStage(); drawCoach(); drawCtrl(); }
-  function refresh() { drawStage(); drawCoach(); }
+  function refresh() { paint(); drawCoach(); }
 
   /* ---------- engine ---------- */
   const tOf = (n, pass = run.pass) => run.t0 + (pass * run.len + n.pos - run.base) * run.spb;
@@ -170,6 +193,8 @@ export function render(root, prm) {
       demo, spb, bpm: bpm(), base: S.from * beats, len: (S.to - S.from) * beats, t0: c.currentTime + 0.15 + beats * spb,
       exp: demo ? [] : rn.filter(mine), acc: demo ? rn : rn.filter(n => !mine(n)), ai: 0, ap: 0, click: -beats,
       pass: 0, res: {}, carry: {}, strays: 0, missed: [], win: Math.min(0.32, 0.45 * spb),
+      // wait mode: p is the position in beats (count-in is negative); it stops at each unplayed group
+      wait: store.wait && !demo, p: -beats, floor: -beats, last: c.currentTime, held: false, slip: {}, slips: 0, prev: null,
     };
     drawCtrl(); drawCoach(); drawStage();
     raf = requestAnimationFrame(frame);
@@ -183,33 +208,56 @@ export function render(root, prm) {
   }
   function frame() {
     if (!run) return;
-    const now = audio.now(), bp = (now - run.t0) / run.spb;
-    while (run.t0 + run.click * run.spb < now + 0.12) {
-      if (run.click < 0 || (S.metro && !run.demo)) audio.click(run.t0 + run.click * run.spb, ((run.click % beats) + beats) % beats === 0);
-      run.click++;
+    const now = audio.now();
+    let local, changed = false, over = false;
+    if (run.wait) {
+      const dt = Math.min(0.6, Math.max(0, now - run.last)); run.last = now;
+      const pend = nextGroup(), lim = pend ? pend[0].pos - run.base : run.len;
+      let p = run.p + dt / run.spb;
+      if (run.p < run.floor) p += (run.floor - run.p) * Math.min(1, dt * 12); // glide to a note played early
+      run.p = Math.min(p, lim); run.held = !!pend && run.p >= lim;
+      // clicks and the other hand follow the line, so they pause while it waits
+      while (run.click <= run.p + 1e-6) { if (run.click < 0 || S.metro) audio.click(0, ((run.click % beats) + beats) % beats === 0); run.click++; }
+      if (!audio.mic.on) while (run.ai < run.acc.length && run.acc[run.ai].pos - run.base <= run.p + 1e-6) { const n = run.acc[run.ai++]; audio.note(n.midi, 0, n.d * run.spb * 0.95, 0.4); }
+      local = run.p; over = !pend && run.p >= run.len - 1e-6;
+    } else {
+      const bp = (now - run.t0) / run.spb;
+      while (run.t0 + run.click * run.spb < now + 0.12) {
+        if (run.click < 0 || (S.metro && !run.demo)) audio.click(run.t0 + run.click * run.spb, ((run.click % beats) + beats) % beats === 0);
+        run.click++;
+      }
+      if (!audio.mic.on || run.demo) while (run.acc.length) {
+        if (run.ai >= run.acc.length) { if (run.demo || !(S.loop || S.drill)) break; run.ai = 0; run.ap++; }
+        const n = run.acc[run.ai], when = tOf(n, run.ap);
+        if (when > now + 0.12) break;
+        audio.note(n.midi, when, n.d * run.spb * 0.95, run.demo ? 0.75 : 0.4); run.ai++;
+      }
+      // Misses are held until the pass ends: a pass with nothing played at all pauses instead of counting.
+      for (const n of run.exp) if (!run.res[n.id] && now > tOf(n) + run.win) { run.res[n.id] = { st: 'miss' }; run.missed.push(n); changed = true; }
+      local = bp - dispPass() * run.len;
+      over = run.demo ? bp >= run.len : bp >= (run.pass + 1) * run.len + run.win / run.spb;
     }
-    if (!audio.mic.on || run.demo) while (run.acc.length) {
-      if (run.ai >= run.acc.length) { if (run.demo || !(S.loop || S.drill)) break; run.ai = 0; run.ap++; }
-      const n = run.acc[run.ai], when = tOf(n, run.ap);
-      if (when > now + 0.12) break;
-      audio.note(n.midi, when, n.d * run.spb * 0.95, run.demo ? 0.75 : 0.4); run.ai++;
-    }
-    let changed = false;
-    // Misses are held until the pass ends: a pass with nothing played at all pauses instead of counting.
-    for (const n of run.exp) if (!run.res[n.id] && now > tOf(n) + run.win) { run.res[n.id] = { st: 'miss' }; run.missed.push(n); changed = true; }
-    const dp = dispPass(), local = bp - dp * run.len, res = dp > run.pass ? run.carry : run.res;
-    let tg;
+    // Key lights: full light only once a note is due (the line or the block has reached it);
+    // in the sheet view the next note gets a faint hint so the hand can prepare.
+    let tg, soon = [];
     if (run.demo) tg = run.acc.filter(n => n.pos - run.base <= local && local < n.pos - run.base + n.d);
-    else { const pend = run.exp.filter(n => !res[n.id]); tg = pend.length ? pend.filter(n => n.pos === pend[0].pos) : []; }
-    const key = tg.map(n => n.id).join();
-    if (key !== lastTg) { lastTg = key; kb.targets(tg); }
+    else {
+      const res = shownRes(), pend = run.exp.filter(n => !res[n.id]), first = pend.length ? pend.filter(n => n.pos === pend[0].pos) : [];
+      const due = first.length && first[0].pos - run.base <= local + LEAD / run.spb;
+      tg = due ? first : []; if (!due && store.view === 'sheet') soon = first;
+    }
+    const key = tg.map(n => n.id).join() + '|' + soon.map(n => n.id).join();
+    if (key !== lastTg) { lastTg = key; kb.targets(tg, soon); }
+    if (local < 0) setCue(String(Math.ceil(-local)), true);
+    else if (run.wait && run.held) setCue(t('Your turn') + ' — ' + [...new Set(tg.map(n => nn(n.midi, false, piece.sharps)))].join(' · '), false);
+    else setCue('', false);
     if (pendingStop) { const p = pendingStop; pendingStop = null; strictStop(p); return; }
     if (changed) refresh();
     if (store.view === 'sheet') {
       const svg = root.querySelector('.staff'), line = movePlayhead(svg, layout, run.base + Math.max(0, local));
       if (line !== lastLine && svg) { lastLine = line; $('stage').scrollTop = line * layout.sysH * (svg.clientWidth / layout.W) - 8; }
     } else placeFall();
-    if (run.demo ? bp >= run.len : bp >= (run.pass + 1) * run.len + run.win / run.spb) endPass();
+    if (over) endPass();
     if (run) raf = requestAnimationFrame(frame);
   }
   function record(bar, st, n, r) {
@@ -245,6 +293,33 @@ export function render(root, prm) {
     if (src !== 'mic' && store.sound) audio.note(m, 0, 0.5, vel);
     ses.take.push({ m, t: (Date.now() - ses.start) / 1000 });
     if (!run || run.demo) { kb.press(m, 'on'); return; }
+    if (run.wait) onDownWait(m, vel, src); else onDownTempo(m, vel, src);
+    if (pendingStop) { const p = pendingStop; pendingStop = null; strictStop(p); return; }
+    refresh();
+  }
+  // Wait mode: only the notes the line is waiting for count. A wrong key marks the note red and the line keeps waiting.
+  function onDownWait(m, vel, src) {
+    const pend = nextGroup(), mic = src === 'mic';
+    let hit = pend?.find(n => n.midi === m);
+    if (!hit && mic && pend) hit = pend.find(n => n.midi < 48 && n.midi + 12 === m); // low notes: a mic often hears only the octave
+    if (hit) {
+      // through a mic an octave doubling sounds like one note, so it counts for both
+      for (const n of mic ? pend.filter(x => (x.midi - hit.midi) % 12 === 0) : [hit]) {
+        const fixed = run.slip[n.id] != null; delete run.slip[n.id];
+        run.res[n.id] = { st: 'ok', fixed };
+        if (!fixed) record(n.bar, 'ok', n, {});
+        if (src === 'midi') ses.vel[n.h].push(vel);
+      }
+      if (pend.every(n => run.res[n.id])) { run.floor = hit.pos - run.base; run.prev = pend; }
+      kb.press(m, 'ok');
+      return;
+    }
+    if (mic && overtone(m, [...(pend || []), ...(run.prev || [])])) return; // an overtone or a ringing note, not a wrong key
+    kb.press(m, 'bad');
+    const near = pend?.filter(n => run.slip[n.id] == null).sort((a, b) => Math.abs(a.midi - m) - Math.abs(b.midi - m))[0];
+    if (near) { run.slip[near.id] = m; run.slips++; record(near.bar, 'wrong', near, { played: m }); }
+  }
+  function onDownTempo(m, vel, src) {
     const now = audio.now() - (src === 'mic' ? 0.07 : 0), bp = (now - run.t0) / run.spb;
     const find = (pass, taken) => {
       let best = null;
@@ -271,21 +346,24 @@ export function render(root, prm) {
         if (run.res[n.id]) { if (n.midi === m && run.res[n.id].st === 'wrong') fixing = true; continue; }
         if (!near || dt < near.dt) near = { n, dt };
       }
+      if (src === 'mic' && overtone(m, run.exp.filter(n => Math.abs(now - tOf(n)) <= run.win * 1.5))) return;
       if (near) { const r = { st: 'wrong', played: m }; run.res[near.n.id] = r; record(near.n.bar, 'wrong', near.n, r); }
       else if (!fixing && bp > -0.25) { run.strays++; record(Math.min(S.to - 1, S.from + Math.floor((Math.max(0, bp) % run.len) / beats)), 'wrong', null, { played: m }); }
     }
-    if (pendingStop) { const p = pendingStop; pendingStop = null; strictStop(p); return; }
-    refresh();
   }
   function endPass() {
     if (run.demo) { stop(); return; }
-    if (run.exp.every(n => run.res[n.id]?.st === 'miss') && !run.strays) {
-      S.coach = { h: t('Paused.'), d: t('Nothing heard for a whole pass. Press play when you are ready.') };
-      stop(); return;
+    let clean;
+    if (run.wait) clean = run.exp.length > 0 && run.slips === 0;
+    else {
+      if (run.exp.every(n => run.res[n.id]?.st === 'miss') && !run.strays) {
+        S.coach = { h: t('Paused.'), d: t('Nothing heard for a whole pass. Press play when you are ready.') };
+        stop(); return;
+      }
+      run.missed.forEach(n => record(n.bar, 'miss', n, {})); run.missed = [];
+      const sts = run.exp.map(n => run.res[n.id]?.st);
+      clean = run.strays === 0 && sts.every(s => s === 'ok' || s === 'late' || s === 'early') && sts.filter(s => s === 'ok').length >= sts.length * 0.8;
     }
-    run.missed.forEach(n => record(n.bar, 'miss', n, {})); run.missed = [];
-    const sts = run.exp.map(n => run.res[n.id]?.st);
-    const clean = run.strays === 0 && sts.every(s => s === 'ok' || s === 'late' || s === 'early') && sts.filter(s => s === 'ok').length >= sts.length * 0.8;
     let restart = false;
     if (clean) {
       S.reps++;
@@ -312,6 +390,7 @@ export function render(root, prm) {
     if (restart) { start(); drawTop(); return; }
     if (!S.loop && !S.drill) { finish(true); return; }
     run.pass++; run.res = run.carry; run.carry = {}; run.strays = 0;
+    if (run.wait) Object.assign(run, { res: {}, slip: {}, slips: 0, p: 0, floor: 0, click: 0, ai: 0, prev: null });
     refresh();
   }
 
@@ -381,6 +460,7 @@ export function render(root, prm) {
     hands: b => { S.hands = b.dataset.v; S.reps = 0; const was = run; stop(true); redraw(); if (was && !was.demo) start(); },
     loop: () => { S.loop = !S.loop; drawCtrl(); },
     metro: () => { S.metro = !S.metro; drawCtrl(); },
+    wait: () => { store.wait = !store.wait; save(); S.reps = 0; const was = run; stop(true); redraw(); if (was && !was.demo) start(); },
     fing: () => { store.fingering = !store.fingering; save(); drawCtrl(); drawStage(); },
     end: () => finish(true),
     skip: () => {
